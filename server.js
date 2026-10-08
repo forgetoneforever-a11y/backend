@@ -44,7 +44,6 @@ async function initDb() {
         );
     `);
 
-    // Если таблица уже существует — добавляем колонку username
     await pool.query(`
         ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
     `);
@@ -57,6 +56,17 @@ async function initDb() {
             is_like BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT NOW(),
             UNIQUE(from_user, to_user)
+        );
+    `);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS messages (
+            id SERIAL PRIMARY KEY,
+            from_user TEXT NOT NULL,
+            to_user TEXT NOT NULL,
+            text TEXT NOT NULL,
+            is_read BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT NOW()
         );
     `);
 
@@ -237,6 +247,100 @@ app.get("/api/matches", async (req, res) => {
                     AND l1.is_like = TRUE 
                     AND l2.is_like = TRUE
             )
+        `, [telegram_id]);
+
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 💬 Отправить сообщение
+app.post("/api/messages", async (req, res) => {
+    try {
+        const { from_user, to_user, text } = req.body;
+
+        if (!from_user || !to_user || !text) {
+            return res.status(400).json({ error: "from_user, to_user и text обязательны" });
+        }
+
+        const result = await pool.query(`
+            INSERT INTO messages (from_user, to_user, text)
+            VALUES ($1, $2, $3)
+            RETURNING *;
+        `, [from_user, to_user, text]);
+
+        console.log(`💬 Сообщение: ${from_user} -> ${to_user}`);
+
+        // Уведомляем через бота
+        if (bot) {
+            const fromUser = await pool.query(
+                "SELECT name, age FROM users WHERE telegram_id = $1",
+                [from_user]
+            );
+            const sender = fromUser.rows[0];
+
+            if (sender) {
+                const msg = `💬 <b>Новое сообщение от ${sender.name}, ${sender.age}:</b>\n\n${text}\n\n👉 Открой Ember, чтобы ответить!`;
+                try {
+                    await bot.sendMessage(to_user, msg, { parse_mode: "HTML" });
+                    console.log("📩 Уведомление о сообщении отправлено");
+                } catch (botErr) {
+                    console.error("Ошибка отправки:", botErr.message);
+                }
+            }
+        }
+
+        res.json({ ok: true, message: result.rows[0] });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 📋 Получить историю чата
+app.get("/api/messages", async (req, res) => {
+    try {
+        const { user1, user2 } = req.query;
+
+        if (!user1 || !user2) {
+            return res.status(400).json({ error: "user1 и user2 обязательны" });
+        }
+
+        const result = await pool.query(`
+            SELECT * FROM messages
+            WHERE (from_user = $1 AND to_user = $2)
+               OR (from_user = $2 AND to_user = $1)
+            ORDER BY created_at ASC
+            LIMIT 200
+        `, [user1, user2]);
+
+        // Помечаем входящие как прочитанные
+        await pool.query(`
+            UPDATE messages SET is_read = TRUE
+            WHERE from_user = $1 AND to_user = $2
+        `, [user2, user1]);
+
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 📋 Непрочитанные — для бейджа
+app.get("/api/messages/unread", async (req, res) => {
+    try {
+        const { telegram_id } = req.query;
+
+        if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
+
+        const result = await pool.query(`
+            SELECT from_user, COUNT(*) as count
+            FROM messages
+            WHERE to_user = $1 AND is_read = FALSE
+            GROUP BY from_user
         `, [telegram_id]);
 
         res.json(result.rows);
