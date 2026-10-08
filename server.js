@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
+const TelegramBot = require("node-telegram-bot-api");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -14,6 +15,13 @@ const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false }
 });
+
+// Telegram-бот для уведомлений (без polling — только отправка)
+const bot = process.env.BOT_TOKEN
+    ? new TelegramBot(process.env.BOT_TOKEN, { polling: false })
+    : null;
+
+if (!bot) console.warn("BOT_TOKEN не задан — уведомления не будут отправляться");
 
 // Создать таблицы при старте
 async function initDb() {
@@ -93,13 +101,10 @@ app.get("/api/recommendations", async (req, res) => {
         const params = [telegram_id || ""];
         let i = 2;
 
-        // Фильтр по полу (кого я ищу)
         if (looking_for && looking_for !== "any") {
             query += ` AND gender = $${i++}`;
             params.push(looking_for);
         }
-
-        // Фильтр по возрасту
         if (min_age) {
             query += ` AND age >= $${i++}`;
             params.push(min_age);
@@ -119,7 +124,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// Поставить лайк/дизлайк и проверить взаимность
+// ❤️ Поставить лайк/дизлайк и проверить взаимность
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -135,11 +140,11 @@ app.post("/api/likes", async (req, res) => {
             ON CONFLICT (from_user, to_user) DO UPDATE SET is_like = EXCLUDED.is_like
         `, [from_user, to_user, is_like]);
 
-        // Проверяем взаимность
         let isMatch = false;
         let matchedUser = null;
 
         if (is_like) {
+            // Проверяем взаимность
             const mutual = await pool.query(`
                 SELECT * FROM likes
                 WHERE from_user = $1 AND to_user = $2 AND is_like = TRUE
@@ -148,13 +153,35 @@ app.post("/api/likes", async (req, res) => {
             if (mutual.rows.length > 0) {
                 isMatch = true;
 
-                // Получаем данные того, с кем мэтч
+                // Данные того, кого лайкнули (для попапа мне)
                 const userData = await pool.query(
                     "SELECT telegram_id, name, age, photo, bio FROM users WHERE telegram_id = $1",
                     [to_user]
                 );
                 matchedUser = userData.rows[0];
-                console.log(`МЭТЧ! ${from_user} <-> ${to_user}`);
+
+                // Данные того, кто лайкнул (для уведомления второму)
+                const myData = await pool.query(
+                    "SELECT telegram_id, name, age, photo FROM users WHERE telegram_id = $1",
+                    [from_user]
+                );
+                const myInfo = myData.rows[0];
+
+                console.log(`МЭТЧ: ${from_user} <-> ${to_user}`);
+
+                // 📩 Отправляем уведомления обоим через Telegram-бота
+                if (bot && myInfo && matchedUser) {
+                    const msgToYou = `💕 <b>У тебя новый мэтч!</b>\n\n${myInfo.name}, ${myInfo.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
+                    const msgToMe = `💕 <b>У тебя новый мэтч!</b>\n\n${matchedUser.name}, ${matchedUser.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
+
+                    try {
+                        await bot.sendMessage(to_user, msgToYou, { parse_mode: "HTML" });
+                        await bot.sendMessage(from_user, msgToMe, { parse_mode: "HTML" });
+                        console.log("📩 Уведомления отправлены");
+                    } catch (botErr) {
+                        console.error("Ошибка отправки в Telegram:", botErr.message);
+                    }
+                }
             }
         }
 
@@ -165,7 +192,7 @@ app.post("/api/likes", async (req, res) => {
     }
 });
 
-// Получить мои мэтчи
+// 📋 Получить мои мэтчи
 app.get("/api/matches", async (req, res) => {
     try {
         const { telegram_id } = req.query;
