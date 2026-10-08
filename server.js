@@ -16,7 +16,7 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-// Telegram-бот для уведомлений (без polling — только отправка)
+// Telegram-бот для уведомлений
 const bot = process.env.BOT_TOKEN
     ? new TelegramBot(process.env.BOT_TOKEN, { polling: false })
     : null;
@@ -124,7 +124,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// ❤️ Поставить лайк/дизлайк и проверить взаимность
+// ❤️ Поставить лайк/дизлайк и уведомить пользователя
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -144,6 +144,13 @@ app.post("/api/likes", async (req, res) => {
         let matchedUser = null;
 
         if (is_like) {
+            // Данные того, кто лайкнул
+            const myData = await pool.query(
+                "SELECT telegram_id, name, age, photo FROM users WHERE telegram_id = $1",
+                [from_user]
+            );
+            const myInfo = myData.rows[0];
+
             // Проверяем взаимность
             const mutual = await pool.query(`
                 SELECT * FROM likes
@@ -151,35 +158,42 @@ app.post("/api/likes", async (req, res) => {
             `, [to_user, from_user]);
 
             if (mutual.rows.length > 0) {
+                // 💕 ВЗАИМНО — это МЭТЧ
                 isMatch = true;
 
-                // Данные того, кого лайкнули (для попапа мне)
                 const userData = await pool.query(
                     "SELECT telegram_id, name, age, photo, bio FROM users WHERE telegram_id = $1",
                     [to_user]
                 );
                 matchedUser = userData.rows[0];
 
-                // Данные того, кто лайкнул (для уведомления второму)
-                const myData = await pool.query(
-                    "SELECT telegram_id, name, age, photo FROM users WHERE telegram_id = $1",
-                    [from_user]
-                );
-                const myInfo = myData.rows[0];
-
                 console.log(`МЭТЧ: ${from_user} <-> ${to_user}`);
 
-                // 📩 Отправляем уведомления обоим через Telegram-бота
+                // Отправляем обоим "Это мэтч!"
                 if (bot && myInfo && matchedUser) {
-                    const msgToYou = `💕 <b>У тебя новый мэтч!</b>\n\n${myInfo.name}, ${myInfo.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
-                    const msgToMe = `💕 <b>У тебя новый мэтч!</b>\n\n${matchedUser.name}, ${matchedUser.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
+                    const msgToYou = `💕 <b>Это мэтч!</b>\n\n${myInfo.name}, ${myInfo.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
+                    const msgToMe = `💕 <b>Это мэтч!</b>\n\n${matchedUser.name}, ${matchedUser.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
 
                     try {
                         await bot.sendMessage(to_user, msgToYou, { parse_mode: "HTML" });
                         await bot.sendMessage(from_user, msgToMe, { parse_mode: "HTML" });
-                        console.log("📩 Уведомления отправлены");
+                        console.log("📩 Уведомления о мэтче отправлены");
                     } catch (botErr) {
-                        console.error("Ошибка отправки в Telegram:", botErr.message);
+                        console.error("Ошибка отправки уведомления о мэтче:", botErr.message);
+                    }
+                }
+            } else {
+                // 💗 ОДНОСТОРОННИЙ ЛАЙК — просто уведомление
+                console.log(`💗 Лайк: ${from_user} -> ${to_user}`);
+
+                if (bot && myInfo) {
+                    const msg = `💗 <b>Тебя лайкнул(а) ${myInfo.name}, ${myInfo.age}</b>\n\n👉 Открой Ember, чтобы ответить взаимностью!`;
+
+                    try {
+                        await bot.sendMessage(to_user, msg, { parse_mode: "HTML" });
+                        console.log("📩 Уведомление о лайке отправлено");
+                    } catch (botErr) {
+                        console.error("Ошибка отправки уведомления о лайке:", botErr.message);
                     }
                 }
             }
