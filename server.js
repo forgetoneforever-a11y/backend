@@ -29,6 +29,7 @@ async function initDb() {
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             telegram_id TEXT UNIQUE,
+            username TEXT,
             name TEXT NOT NULL,
             nickname TEXT,
             age INTEGER,
@@ -41,6 +42,11 @@ async function initDb() {
             language TEXT DEFAULT 'ru',
             created_at TIMESTAMP DEFAULT NOW()
         );
+    `);
+
+    // Если таблица уже существует — добавляем колонку username
+    await pool.query(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
     `);
 
     await pool.query(`
@@ -64,14 +70,15 @@ app.get("/", (req, res) => res.send("Ember API работает"));
 // Регистрация — сохранить анкету
 app.post("/api/register", async (req, res) => {
     try {
-        const { telegram_id, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language } = req.body;
+        const { telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language } = req.body;
 
         if (!name) return res.status(400).json({ error: "Имя обязательно" });
 
         const result = await pool.query(`
-            INSERT INTO users (telegram_id, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO users (telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (telegram_id) DO UPDATE SET
+                username = EXCLUDED.username,
                 name = EXCLUDED.name,
                 nickname = EXCLUDED.nickname,
                 age = EXCLUDED.age,
@@ -83,7 +90,7 @@ app.post("/api/register", async (req, res) => {
                 photo = EXCLUDED.photo,
                 language = EXCLUDED.language
             RETURNING *;
-        `, [telegram_id, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language]);
+        `, [telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language]);
 
         res.json({ ok: true, user: result.rows[0] });
     } catch (e) {
@@ -124,7 +131,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// ❤️ Поставить лайк/дизлайк и уведомить пользователя
+// Поставить лайк/дизлайк и уведомить пользователя
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -158,11 +165,11 @@ app.post("/api/likes", async (req, res) => {
             `, [to_user, from_user]);
 
             if (mutual.rows.length > 0) {
-                // 💕 ВЗАИМНО — это МЭТЧ
+                // ВЗАИМНО — это МЭТЧ
                 isMatch = true;
 
                 const userData = await pool.query(
-                    "SELECT telegram_id, name, age, photo, bio FROM users WHERE telegram_id = $1",
+                    "SELECT telegram_id, username, name, age, photo, bio FROM users WHERE telegram_id = $1",
                     [to_user]
                 );
                 matchedUser = userData.rows[0];
@@ -183,7 +190,7 @@ app.post("/api/likes", async (req, res) => {
                     }
                 }
             } else {
-                // 💗 ОДНОСТОРОННИЙ ЛАЙК — просто уведомление
+                // ОДНОСТОРОННИЙ ЛАЙК — просто уведомление
                 console.log(`💗 Лайк: ${from_user} -> ${to_user}`);
 
                 if (bot && myInfo) {
@@ -206,7 +213,7 @@ app.post("/api/likes", async (req, res) => {
     }
 });
 
-// 📋 Получить мои мэтчи
+// Получить мои мэтчи
 app.get("/api/matches", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -215,7 +222,7 @@ app.get("/api/matches", async (req, res) => {
 
         const result = await pool.query(`
             SELECT 
-                u.telegram_id, u.name, u.age, u.photo, u.bio, u.gender
+                u.telegram_id, u.username, u.name, u.age, u.photo, u.bio, u.gender
             FROM users u
             WHERE u.telegram_id IN (
                 SELECT CASE 
