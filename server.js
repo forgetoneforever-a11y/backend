@@ -84,6 +84,11 @@ app.post("/api/register", async (req, res) => {
 
         if (!name) return res.status(400).json({ error: "Имя обязательно" });
 
+        // Проверка возраста
+        if (age && age < 13) {
+            return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
+        }
+
         const result = await pool.query(`
             INSERT INTO users (telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
