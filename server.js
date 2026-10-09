@@ -77,17 +77,13 @@ initDb().catch(console.error);
 // Проверка
 app.get("/", (req, res) => res.send("Ember API работает"));
 
-// Регистрация — сохранить анкету
+// Регистрация
 app.post("/api/register", async (req, res) => {
     try {
         const { telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language } = req.body;
 
         if (!name) return res.status(400).json({ error: "Имя обязательно" });
-
-        // Проверка возраста
-        if (age && age < 13) {
-            return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
-        }
+        if (age && age < 13) return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
 
         const result = await pool.query(`
             INSERT INTO users (telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language)
@@ -114,12 +110,19 @@ app.post("/api/register", async (req, res) => {
     }
 });
 
-// Получить анкеты (кроме своей)
+// 🔥 РЕКОМЕНДАЦИИ — не показываем тех, с кем уже взаимодействовал
 app.get("/api/recommendations", async (req, res) => {
     try {
         const { telegram_id, looking_for, min_age, max_age } = req.query;
 
-        let query = "SELECT * FROM users WHERE telegram_id != $1";
+        let query = `SELECT * FROM users 
+            WHERE telegram_id != $1 
+            AND telegram_id NOT IN (
+                SELECT to_user FROM likes WHERE from_user = $1
+            )
+            AND telegram_id NOT IN (
+                SELECT from_user FROM likes WHERE to_user = $1
+            )`;
         const params = [telegram_id || ""];
         let i = 2;
 
@@ -146,7 +149,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// Поставить лайк/дизлайк и уведомить пользователя
+// Лайк/дизлайк
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -155,7 +158,6 @@ app.post("/api/likes", async (req, res) => {
             return res.status(400).json({ error: "from_user и to_user обязательны" });
         }
 
-        // Сохраняем лайк
         await pool.query(`
             INSERT INTO likes (from_user, to_user, is_like)
             VALUES ($1, $2, $3)
@@ -166,21 +168,18 @@ app.post("/api/likes", async (req, res) => {
         let matchedUser = null;
 
         if (is_like) {
-            // Данные того, кто лайкнул
             const myData = await pool.query(
                 "SELECT telegram_id, name, age, photo FROM users WHERE telegram_id = $1",
                 [from_user]
             );
             const myInfo = myData.rows[0];
 
-            // Проверяем взаимность
             const mutual = await pool.query(`
                 SELECT * FROM likes
                 WHERE from_user = $1 AND to_user = $2 AND is_like = TRUE
             `, [to_user, from_user]);
 
             if (mutual.rows.length > 0) {
-                // ВЗАИМНО — это МЭТЧ
                 isMatch = true;
 
                 const userData = await pool.query(
@@ -191,7 +190,6 @@ app.post("/api/likes", async (req, res) => {
 
                 console.log(`МЭТЧ: ${from_user} <-> ${to_user}`);
 
-                // Отправляем обоим "Это мэтч!"
                 if (bot && myInfo && matchedUser) {
                     const msgToYou = `💕 <b>Это мэтч!</b>\n\n${myInfo.name}, ${myInfo.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
                     const msgToMe = `💕 <b>Это мэтч!</b>\n\n${matchedUser.name}, ${matchedUser.age} тоже тебя лайкнул(а).\n\n👉 Открой Ember, чтобы написать первым!`;
@@ -201,11 +199,10 @@ app.post("/api/likes", async (req, res) => {
                         await bot.sendMessage(from_user, msgToMe, { parse_mode: "HTML" });
                         console.log("📩 Уведомления о мэтче отправлены");
                     } catch (botErr) {
-                        console.error("Ошибка отправки уведомления о мэтче:", botErr.message);
+                        console.error("Ошибка отправки:", botErr.message);
                     }
                 }
             } else {
-                // ОДНОСТОРОННИЙ ЛАЙК — просто уведомление
                 console.log(`💗 Лайк: ${from_user} -> ${to_user}`);
 
                 if (bot && myInfo) {
@@ -215,7 +212,7 @@ app.post("/api/likes", async (req, res) => {
                         await bot.sendMessage(to_user, msg, { parse_mode: "HTML" });
                         console.log("📩 Уведомление о лайке отправлено");
                     } catch (botErr) {
-                        console.error("Ошибка отправки уведомления о лайке:", botErr.message);
+                        console.error("Ошибка отправки:", botErr.message);
                     }
                 }
             }
@@ -228,11 +225,85 @@ app.post("/api/likes", async (req, res) => {
     }
 });
 
+// 📥 Кто меня лайкнул (а я ещё не лайкнул)
+app.get("/api/likes/incoming", async (req, res) => {
+    try {
+        const { telegram_id } = req.query;
+        if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
+
+        const result = await pool.query(`
+            SELECT u.telegram_id, u.username, u.name, u.age, u.photo, u.bio, u.gender
+            FROM users u
+            INNER JOIN likes l ON l.from_user = u.telegram_id
+            WHERE l.to_user = $1
+              AND l.is_like = TRUE
+              AND NOT EXISTS (
+                  SELECT 1 FROM likes l2
+                  WHERE l2.from_user = $1 AND l2.to_user = u.telegram_id
+              )
+            ORDER BY l.created_at DESC
+        `, [telegram_id]);
+
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 📤 Кого я лайкнул
+app.get("/api/likes/outgoing", async (req, res) => {
+    try {
+        const { telegram_id } = req.query;
+        if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
+
+        const result = await pool.query(`
+            SELECT 
+                u.telegram_id, u.username, u.name, u.age, u.photo, u.bio, u.gender,
+                EXISTS(
+                    SELECT 1 FROM likes l2 
+                    WHERE l2.from_user = u.telegram_id 
+                      AND l2.to_user = $1 
+                      AND l2.is_like = TRUE
+                ) AS is_mutual
+            FROM users u
+            INNER JOIN likes l ON l.to_user = u.telegram_id
+            WHERE l.from_user = $1 AND l.is_like = TRUE
+            ORDER BY l.created_at DESC
+        `, [telegram_id]);
+
+        res.json(result.rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ❌ Отменить лайк
+app.delete("/api/likes", async (req, res) => {
+    try {
+        const { from_user, to_user } = req.body;
+
+        if (!from_user || !to_user) {
+            return res.status(400).json({ error: "from_user и to_user обязательны" });
+        }
+
+        await pool.query(`
+            DELETE FROM likes WHERE from_user = $1 AND to_user = $2
+        `, [from_user, to_user]);
+
+        console.log(`❌ Лайк отменён: ${from_user} -> ${to_user}`);
+        res.json({ ok: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Получить мои мэтчи
 app.get("/api/matches", async (req, res) => {
     try {
         const { telegram_id } = req.query;
-
         if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
 
         const result = await pool.query(`
@@ -276,9 +347,6 @@ app.post("/api/messages", async (req, res) => {
             RETURNING *;
         `, [from_user, to_user, text]);
 
-        console.log(`💬 Сообщение: ${from_user} -> ${to_user}`);
-
-        // Уведомляем через бота
         if (bot) {
             const fromUser = await pool.query(
                 "SELECT name, age FROM users WHERE telegram_id = $1",
@@ -290,7 +358,6 @@ app.post("/api/messages", async (req, res) => {
                 const msg = `💬 <b>Новое сообщение от ${sender.name}, ${sender.age}:</b>\n\n${text}\n\n👉 Открой Ember, чтобы ответить!`;
                 try {
                     await bot.sendMessage(to_user, msg, { parse_mode: "HTML" });
-                    console.log("📩 Уведомление о сообщении отправлено");
                 } catch (botErr) {
                     console.error("Ошибка отправки:", botErr.message);
                 }
@@ -304,14 +371,11 @@ app.post("/api/messages", async (req, res) => {
     }
 });
 
-// 📋 Получить историю чата
+// История чата
 app.get("/api/messages", async (req, res) => {
     try {
         const { user1, user2 } = req.query;
-
-        if (!user1 || !user2) {
-            return res.status(400).json({ error: "user1 и user2 обязательны" });
-        }
+        if (!user1 || !user2) return res.status(400).json({ error: "user1 и user2 обязательны" });
 
         const result = await pool.query(`
             SELECT * FROM messages
@@ -321,7 +385,6 @@ app.get("/api/messages", async (req, res) => {
             LIMIT 200
         `, [user1, user2]);
 
-        // Помечаем входящие как прочитанные
         await pool.query(`
             UPDATE messages SET is_read = TRUE
             WHERE from_user = $1 AND to_user = $2
@@ -334,11 +397,10 @@ app.get("/api/messages", async (req, res) => {
     }
 });
 
-// 📋 Непрочитанные — для бейджа
+// Непрочитанные
 app.get("/api/messages/unread", async (req, res) => {
     try {
         const { telegram_id } = req.query;
-
         if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
 
         const result = await pool.query(`
