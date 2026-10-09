@@ -77,7 +77,7 @@ initDb().catch(console.error);
 // Проверка
 app.get("/", (req, res) => res.send("Ember API работает"));
 
-// Регистрация
+// Регистрация — сохранить анкету
 app.post("/api/register", async (req, res) => {
     try {
         const { telegram_id, username, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language } = req.body;
@@ -110,7 +110,65 @@ app.post("/api/register", async (req, res) => {
     }
 });
 
-// 🔥 РЕКОМЕНДАЦИИ — не показываем тех, с кем уже взаимодействовал
+// 👤 Получить свой профиль
+app.get("/api/profile", async (req, res) => {
+    try {
+        const { telegram_id } = req.query;
+        if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
+
+        const result = await pool.query(
+            "SELECT * FROM users WHERE telegram_id = $1",
+            [telegram_id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Профиль не найден" });
+        }
+
+        res.json(result.rows[0]);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ✏️ Обновить профиль
+app.put("/api/profile", async (req, res) => {
+    try {
+        const { telegram_id, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language } = req.body;
+
+        if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
+        if (age && age < 13) return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
+
+        const result = await pool.query(`
+            UPDATE users SET
+                name = COALESCE($2, name),
+                nickname = $3,
+                age = COALESCE($4, age),
+                gender = COALESCE($5, gender),
+                looking_for = COALESCE($6, looking_for),
+                min_age = COALESCE($7, min_age),
+                max_age = COALESCE($8, max_age),
+                bio = $9,
+                photo = COALESCE($10, photo),
+                language = COALESCE($11, language)
+            WHERE telegram_id = $1
+            RETURNING *;
+        `, [telegram_id, name, nickname, age, gender, looking_for, min_age, max_age, bio, photo, language]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Профиль не найден" });
+        }
+
+        console.log(`✏️ Профиль обновлён: ${telegram_id}`);
+        res.json({ ok: true, user: result.rows[0] });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Рекомендации — не показываем тех, с кем уже взаимодействовал
 app.get("/api/recommendations", async (req, res) => {
     try {
         const { telegram_id, looking_for, min_age, max_age } = req.query;
