@@ -48,7 +48,6 @@ async function initDb() {
         );
     `);
 
-    // Добавляем новые колонки, если их нет (для старых баз)
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner TEXT DEFAULT 'default';`);
@@ -197,7 +196,7 @@ app.delete("/api/profile", async (req, res) => {
     }
 });
 
-// Рекомендации — не показываем тех, с кем уже взаимодействовал
+// Рекомендации
 app.get("/api/recommendations", async (req, res) => {
     try {
         const { telegram_id, looking_for, min_age, max_age } = req.query;
@@ -236,7 +235,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// Лайк/дизлайк с обновлением счётчиков
+// Лайк/дизлайк
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -245,7 +244,6 @@ app.post("/api/likes", async (req, res) => {
             return res.status(400).json({ error: "from_user и to_user обязательны" });
         }
 
-        // Проверяем, был ли уже лайк
         const existing = await pool.query(
             "SELECT is_like FROM likes WHERE from_user = $1 AND to_user = $2",
             [from_user, to_user]
@@ -253,14 +251,12 @@ app.post("/api/likes", async (req, res) => {
         const hadInteraction = existing.rows.length > 0;
         const wasLiked = existing.rows[0]?.is_like;
 
-        // Сохраняем лайк
         await pool.query(`
             INSERT INTO likes (from_user, to_user, is_like)
             VALUES ($1, $2, $3)
             ON CONFLICT (from_user, to_user) DO UPDATE SET is_like = EXCLUDED.is_like
         `, [from_user, to_user, is_like]);
 
-        // Обновляем счётчики
         if (!hadInteraction) {
             if (is_like) {
                 await pool.query(
@@ -300,7 +296,7 @@ app.post("/api/likes", async (req, res) => {
                 isMatch = true;
 
                 const userData = await pool.query(
-                    "SELECT telegram_id, username, name, age, city, photo, bio FROM users WHERE telegram_id = $1",
+                    "SELECT telegram_id, username, name, age, city, photo, bio, banner FROM users WHERE telegram_id = $1",
                     [to_user]
                 );
                 matchedUser = userData.rows[0];
@@ -311,7 +307,6 @@ app.post("/api/likes", async (req, res) => {
 
         res.json({ ok: true, isMatch, matchedUser });
 
-        // Бот в фоне
         setImmediate(async () => {
             try {
                 if (!bot) return;
@@ -339,14 +334,14 @@ app.post("/api/likes", async (req, res) => {
     }
 });
 
-// Кто меня лайкнул
+// Кто меня лайкнул — ДОБАВЛЕН banner
 app.get("/api/likes/incoming", async (req, res) => {
     try {
         const { telegram_id } = req.query;
         if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
 
         const result = await pool.query(`
-            SELECT u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.gender
+            SELECT u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender
             FROM users u
             INNER JOIN likes l ON l.from_user = u.telegram_id
             WHERE l.to_user = $1
@@ -365,7 +360,7 @@ app.get("/api/likes/incoming", async (req, res) => {
     }
 });
 
-// Кого я лайкнул
+// Кого я лайкнул — ДОБАВЛЕН banner
 app.get("/api/likes/outgoing", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -373,7 +368,7 @@ app.get("/api/likes/outgoing", async (req, res) => {
 
         const result = await pool.query(`
             SELECT 
-                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.gender,
+                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender,
                 EXISTS(
                     SELECT 1 FROM likes l2 
                     WHERE l2.from_user = u.telegram_id 
@@ -434,7 +429,7 @@ app.delete("/api/likes", async (req, res) => {
     }
 });
 
-// Мои мэтчи
+// Мои мэтчи — ДОБАВЛЕН banner
 app.get("/api/matches", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -442,7 +437,7 @@ app.get("/api/matches", async (req, res) => {
 
         const result = await pool.query(`
             SELECT 
-                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.gender
+                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender
             FROM users u
             WHERE u.telegram_id IN (
                 SELECT CASE 
@@ -534,7 +529,7 @@ app.get("/api/messages", async (req, res) => {
     }
 });
 
-// Только новые сообщения (для полина)
+// Только новые сообщения
 app.get("/api/messages/since", async (req, res) => {
     try {
         const { user1, user2, since_id } = req.query;
