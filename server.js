@@ -196,7 +196,7 @@ app.delete("/api/profile", async (req, res) => {
     }
 });
 
-// Рекомендации
+// Рекомендации — не показываем тех, с кем уже взаимодействовал
 app.get("/api/recommendations", async (req, res) => {
     try {
         const { telegram_id, looking_for, min_age, max_age } = req.query;
@@ -225,7 +225,7 @@ app.get("/api/recommendations", async (req, res) => {
             params.push(max_age);
         }
 
-        query += " ORDER BY created_at DESC LIMIT 50";
+        query += " ORDER BY created_at DESC LIMIT 200";
 
         const result = await pool.query(query, params);
         res.json(result.rows);
@@ -235,7 +235,7 @@ app.get("/api/recommendations", async (req, res) => {
     }
 });
 
-// Лайк/дизлайк
+// Лайк/дизлайк с обновлением счётчиков
 app.post("/api/likes", async (req, res) => {
     try {
         const { from_user, to_user, is_like } = req.body;
@@ -307,6 +307,7 @@ app.post("/api/likes", async (req, res) => {
 
         res.json({ ok: true, isMatch, matchedUser });
 
+        // Бот в фоне
         setImmediate(async () => {
             try {
                 if (!bot) return;
@@ -334,7 +335,7 @@ app.post("/api/likes", async (req, res) => {
     }
 });
 
-// Кто меня лайкнул — ДОБАВЛЕН banner
+// Кто меня лайкнул
 app.get("/api/likes/incoming", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -360,7 +361,7 @@ app.get("/api/likes/incoming", async (req, res) => {
     }
 });
 
-// Кого я лайкнул — ДОБАВЛЕН banner
+// Кого я лайкнул
 app.get("/api/likes/outgoing", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -429,7 +430,7 @@ app.delete("/api/likes", async (req, res) => {
     }
 });
 
-// Мои мэтчи — ДОБАВЛЕН banner
+// Мои мэтчи
 app.get("/api/matches", async (req, res) => {
     try {
         const { telegram_id } = req.query;
@@ -529,7 +530,7 @@ app.get("/api/messages", async (req, res) => {
     }
 });
 
-// Только новые сообщения
+// Только новые сообщения (для полина)
 app.get("/api/messages/since", async (req, res) => {
     try {
         const { user1, user2, since_id } = req.query;
