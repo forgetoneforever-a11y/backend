@@ -168,6 +168,29 @@ app.put("/api/profile", async (req, res) => {
     }
 });
 
+// 🗑️ Удалить аккаунт полностью
+app.delete("/api/profile", async (req, res) => {
+    try {
+        const { telegram_id } = req.body;
+
+        if (!telegram_id) {
+            return res.status(400).json({ error: "telegram_id обязателен" });
+        }
+
+        // Удаляем всё, что связано с пользователем
+        await pool.query("DELETE FROM likes WHERE from_user = $1 OR to_user = $1", [telegram_id]);
+        await pool.query("DELETE FROM messages WHERE from_user = $1 OR to_user = $1", [telegram_id]);
+        await pool.query("DELETE FROM users WHERE telegram_id = $1", [telegram_id]);
+
+        console.log(`🗑️ Аккаунт удалён: ${telegram_id}`);
+
+        res.json({ ok: true, message: "Аккаунт удалён" });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Рекомендации — не показываем тех, с кем уже взаимодействовал
 app.get("/api/recommendations", async (req, res) => {
     try {
