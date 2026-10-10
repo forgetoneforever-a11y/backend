@@ -41,6 +41,7 @@ async function initDb() {
             bio TEXT,
             photo TEXT,
             banner TEXT DEFAULT 'default',
+            preferences TEXT,
             likes_received INTEGER DEFAULT 0,
             dislikes_received INTEGER DEFAULT 0,
             language TEXT DEFAULT 'ru',
@@ -51,6 +52,7 @@ async function initDb() {
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS city TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner TEXT DEFAULT 'default';`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences TEXT;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS likes_received INTEGER DEFAULT 0;`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS dislikes_received INTEGER DEFAULT 0;`);
 
@@ -86,14 +88,14 @@ app.get("/", (req, res) => res.send("Ember API работает"));
 // Регистрация
 app.post("/api/register", async (req, res) => {
     try {
-        const { telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, language } = req.body;
+        const { telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, preferences, language } = req.body;
 
         if (!name) return res.status(400).json({ error: "Имя обязательно" });
         if (age && age < 13) return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
 
         const result = await pool.query(`
-            INSERT INTO users (telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, language)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            INSERT INTO users (telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, preferences, language)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             ON CONFLICT (telegram_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 name = EXCLUDED.name,
@@ -107,9 +109,10 @@ app.post("/api/register", async (req, res) => {
                 bio = EXCLUDED.bio,
                 photo = EXCLUDED.photo,
                 banner = EXCLUDED.banner,
+                preferences = EXCLUDED.preferences,
                 language = EXCLUDED.language
             RETURNING *;
-        `, [telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner || 'default', language]);
+        `, [telegram_id, username, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner || 'default', preferences || '', language]);
 
         res.json({ ok: true, user: result.rows[0] });
     } catch (e) {
@@ -143,7 +146,7 @@ app.get("/api/profile", async (req, res) => {
 // Обновить профиль
 app.put("/api/profile", async (req, res) => {
     try {
-        const { telegram_id, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, language } = req.body;
+        const { telegram_id, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, preferences, language } = req.body;
 
         if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
         if (age && age < 13) return res.status(400).json({ error: "Минимальный возраст — 13 лет" });
@@ -161,10 +164,11 @@ app.put("/api/profile", async (req, res) => {
                 bio = $10,
                 photo = COALESCE($11, photo),
                 banner = COALESCE($12, banner),
-                language = COALESCE($13, language)
+                preferences = $13,
+                language = COALESCE($14, language)
             WHERE telegram_id = $1
             RETURNING *;
-        `, [telegram_id, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, language]);
+        `, [telegram_id, name, nickname, city, age, gender, looking_for, min_age, max_age, bio, photo, banner, preferences, language]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "Профиль не найден" });
@@ -196,10 +200,10 @@ app.delete("/api/profile", async (req, res) => {
     }
 });
 
-// Рекомендации — не показываем тех, с кем уже взаимодействовал
+// Рекомендации — с фильтрами (город, предпочтения, возраст, пол)
 app.get("/api/recommendations", async (req, res) => {
     try {
-        const { telegram_id, looking_for, min_age, max_age } = req.query;
+        const { telegram_id, looking_for, min_age, max_age, city, preferences, gender } = req.query;
 
         let query = `SELECT * FROM users 
             WHERE telegram_id != $1 
@@ -212,10 +216,19 @@ app.get("/api/recommendations", async (req, res) => {
         const params = [telegram_id || ""];
         let i = 2;
 
+        // Фильтр по полу (кого ищу — из настроек профиля)
         if (looking_for && looking_for !== "any") {
             query += ` AND gender = $${i++}`;
             params.push(looking_for);
         }
+
+        // Фильтр по конкретному полу (из панели фильтра)
+        if (gender && gender !== "any") {
+            query += ` AND gender = $${i++}`;
+            params.push(gender);
+        }
+
+        // Фильтр по возрасту
         if (min_age) {
             query += ` AND age >= $${i++}`;
             params.push(min_age);
@@ -223,6 +236,24 @@ app.get("/api/recommendations", async (req, res) => {
         if (max_age) {
             query += ` AND age <= $${i++}`;
             params.push(max_age);
+        }
+
+        // Фильтр по городу
+        if (city && city.trim()) {
+            query += ` AND LOWER(city) LIKE LOWER($${i++})`;
+            params.push(`%${city.trim()}%`);
+        }
+
+        // Фильтр по предпочтениям
+        if (preferences && preferences.trim()) {
+            const prefs = preferences.split(',').filter(p => p.trim());
+            if (prefs.length > 0) {
+                const conditions = prefs.map(p => {
+                    params.push(`%${p.trim()}%`);
+                    return `preferences LIKE $${i++}`;
+                });
+                query += ` AND (${conditions.join(' OR ')})`;
+            }
         }
 
         query += " ORDER BY created_at DESC LIMIT 200";
@@ -296,7 +327,7 @@ app.post("/api/likes", async (req, res) => {
                 isMatch = true;
 
                 const userData = await pool.query(
-                    "SELECT telegram_id, username, name, age, city, photo, bio, banner FROM users WHERE telegram_id = $1",
+                    "SELECT telegram_id, username, name, age, city, photo, bio, banner, preferences FROM users WHERE telegram_id = $1",
                     [to_user]
                 );
                 matchedUser = userData.rows[0];
@@ -342,7 +373,7 @@ app.get("/api/likes/incoming", async (req, res) => {
         if (!telegram_id) return res.status(400).json({ error: "telegram_id обязателен" });
 
         const result = await pool.query(`
-            SELECT u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender
+            SELECT u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.preferences, u.gender
             FROM users u
             INNER JOIN likes l ON l.from_user = u.telegram_id
             WHERE l.to_user = $1
@@ -369,7 +400,7 @@ app.get("/api/likes/outgoing", async (req, res) => {
 
         const result = await pool.query(`
             SELECT 
-                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender,
+                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.preferences, u.gender,
                 EXISTS(
                     SELECT 1 FROM likes l2 
                     WHERE l2.from_user = u.telegram_id 
@@ -438,7 +469,7 @@ app.get("/api/matches", async (req, res) => {
 
         const result = await pool.query(`
             SELECT 
-                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.gender
+                u.telegram_id, u.username, u.name, u.age, u.city, u.photo, u.bio, u.banner, u.preferences, u.gender
             FROM users u
             WHERE u.telegram_id IN (
                 SELECT CASE 
